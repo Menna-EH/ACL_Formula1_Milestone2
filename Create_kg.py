@@ -246,23 +246,100 @@ def load_entities(session):
 # PERSON B: RESULT FACTS
 # ----------------------------------------------------------------------
 def load_results(session):
-    # TODO(B): Result nodes from results.csv, MERGE on resultId only (shared drives = same
-    #          driver+race twice, so never merge on driver/race).
-    # TODO(B): rels FOR_RACE, BY_DRIVER, FOR_CONSTRUCTOR, HAS_STATUS (direction: Result -> X).
-    # types: points/fastestLapSpeed float; grid, position, positionOrder, laps, milliseconds,
-    #        fastestLap, rank, number int; positionText, time, fastestLapTime strings.
-    pass
+    # MERGE on resultId only: a shared drive gives one driver two Results in one race,
+    # so never merge on driver + race.
+    rows = [{"resultId": to_int(r["resultId"]),
+             "raceId": to_int(r["raceId"]),
+             "driverId": to_int(r["driverId"]),
+             "constructorId": to_int(r["constructorId"]),
+             "statusId": to_int(r["statusId"]),
+             "props": {"number": to_int(r["number"]),
+                       "grid": to_int(r["grid"]),
+                       "position": to_int(r["position"]),
+                       "positionText": to_str(r["positionText"]),
+                       "positionOrder": to_int(r["positionOrder"]),
+                       "points": to_float(r["points"]),
+                       "laps": to_int(r["laps"]),
+                       "time": to_str(r["time"]),
+                       "milliseconds": to_int(r["milliseconds"]),
+                       "fastestLap": to_int(r["fastestLap"]),
+                       "rank": to_int(r["rank"]),
+                       "fastestLapTime": to_str(r["fastestLapTime"]),
+                       "fastestLapSpeed": to_float(r["fastestLapSpeed"])}}
+            for r in read_csv("results.csv")]
+    run_batches(session, """
+        UNWIND $rows AS row
+        MERGE (res:Result {resultId: row.resultId})
+        SET res += row.props
+        WITH res, row
+        MATCH (r:Race {raceId: row.raceId})
+        MATCH (d:Driver {driverId: row.driverId})
+        MATCH (c:Constructor {constructorId: row.constructorId})
+        MATCH (s:Status {statusId: row.statusId})
+        MERGE (res)-[:FOR_RACE]->(r)
+        MERGE (res)-[:BY_DRIVER]->(d)
+        MERGE (res)-[:FOR_CONSTRUCTOR]->(c)
+        MERGE (res)-[:HAS_STATUS]->(s)""", rows)
+    print(f"Results loaded: {len(rows)}")
 
 
 # ----------------------------------------------------------------------
 # PERSON C: QUALIFYING + PITSTOP, VERIFICATION
 # ----------------------------------------------------------------------
+def load_qualifying(session):
+    # q2 / q3 are empty or \N for drivers knocked out early: omitted, not stored.
+    rows = [{"qualifyId": to_int(r["qualifyId"]),
+             "raceId": to_int(r["raceId"]),
+             "driverId": to_int(r["driverId"]),
+             "constructorId": to_int(r["constructorId"]),
+             "props": {"number": to_int(r["number"]),
+                       "position": to_int(r["position"]),
+                       "q1": to_str(r["q1"]),
+                       "q2": to_str(r["q2"]),
+                       "q3": to_str(r["q3"])}}
+            for r in read_csv("qualifying.csv")]
+    run_batches(session, """
+        UNWIND $rows AS row
+        MERGE (q:Qualifying {qualifyId: row.qualifyId})
+        SET q += row.props
+        WITH q, row
+        MATCH (r:Race {raceId: row.raceId})
+        MATCH (d:Driver {driverId: row.driverId})
+        MATCH (c:Constructor {constructorId: row.constructorId})
+        MERGE (q)-[:FOR_RACE]->(r)
+        MERGE (q)-[:BY_DRIVER]->(d)
+        MERGE (q)-[:FOR_CONSTRUCTOR]->(c)""", rows)
+    print(f"Qualifying loaded: {len(rows)}")
+
+
+def load_pitstops(session):
+    # eventId is a STRING built as raceId:driverId:stop. PitStop has no constructor link.
+    rows = []
+    for r in read_csv("pit_stops.csv"):
+        race_id, driver_id, stop = to_int(r["raceId"]), to_int(r["driverId"]), to_int(r["stop"])
+        rows.append({"eventId": f"{race_id}:{driver_id}:{stop}",
+                     "raceId": race_id,
+                     "driverId": driver_id,
+                     "props": {"stop": stop,
+                               "lap": to_int(r["lap"]),
+                               "time": to_str(r["time"]),
+                               "duration": to_str(r["duration"]),
+                               "milliseconds": to_int(r["milliseconds"])}})
+    run_batches(session, """
+        UNWIND $rows AS row
+        MERGE (p:PitStop {eventId: row.eventId})
+        SET p += row.props
+        WITH p, row
+        MATCH (r:Race {raceId: row.raceId})
+        MATCH (d:Driver {driverId: row.driverId})
+        MERGE (p)-[:FOR_RACE]->(r)
+        MERGE (p)-[:BY_DRIVER]->(d)""", rows)
+    print(f"PitStops loaded: {len(rows)}")
+
+
 def load_qualifying_pitstops(session):
-    # TODO(C): Qualifying from qualifying.csv (omit empty q2/q3), rels FOR_RACE, BY_DRIVER,
-    #          FOR_CONSTRUCTOR.
-    # TODO(C): PitStop from pit_stops.csv, eventId = f"{raceId}:{driverId}:{stop}" (string),
-    #          rels FOR_RACE, BY_DRIVER only.
-    pass
+    load_qualifying(session)
+    load_pitstops(session)
 
 
 def verify_counts(session):
